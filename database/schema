@@ -1,0 +1,349 @@
+-- -*- mode: sql; -*-
+
+-- Tables
+
+CREATE TABLE avvik (
+       id INTEGER PRIMARY KEY,
+       ord_id REFERENCES ord(id) NOT NULL,
+       forklåring_id REFERENCES forklåring(id) NOT NULL,
+
+       UNIQUE(ord_id, forklåring_id)
+);
+
+
+CREATE TABLE forklåring (
+       id INTEGER PRIMARY KEY,
+
+       tekst CHAR,
+
+       UNIQUE(tekst)
+);
+
+
+CREATE TABLE setning (
+       id INTEGER PRIMARY KEY,
+       diplom_id REFERENCES diplom(id) NOT NULL,
+
+       tekst CHAR
+);
+
+
+CREATE TABLE yverordna_frase (
+       id INTEGER PRIMARY KEY,
+       setning_id REFERENCES setning(id) NOT NULL,
+
+       tekst CHAR NOT NULL,
+       frasetype CHAR NOT NULL CHECK (frasetype IN ('preposisjonsfrase', 'nomenfrase'))
+);
+
+
+CREATE TABLE bøyingsinformasjon (
+       id INTEGER PRIMARY KEY,
+
+       kjelde CHAR NOT NULL,
+       paradigme JSON
+);
+
+
+CREATE TABLE oppslagsartikkel (
+       id INTEGER PRIMARY KEY,
+       bøyingsinformasjon_id REFERENCES bøyingsinformasjon(id) NOT NULL,
+
+       ord CHAR NOT NULL,
+       kategori CHAR NOT NULL CHECK (kategori IN ('adjektiv', 'bunden artikkel', 'grunntal',
+       		     	          	    	      	  'ordenstal', 'påpeikande pronomen',
+       		     	          	    	      	  'personleg pronomen', 'perfektum partisipp',
+       		     	      	        	      	  'personnamn', 'presens partisipp',
+       		     	      	        	      	  'spørjepronomen', 'stadnamn', 'substantiv',
+                    				    		  'ubunde pronomen')),
+       notat CHAR,  -- Til tydeleggjering av homonym og ulike argument av eit predikat.
+
+       UNIQUE(bøyingsinformasjon_id, ord, kategori, notat) ON CONFLICT ABORT
+);
+
+
+CREATE TABLE styrande_ord (
+       id INTEGER PRIMARY KEY,
+
+       ord CHAR,  -- Triggerar vert brukte til kategoriane som krev ein verdi her.
+       kategori CHAR NOT NULL CHECK (kategori IN ('adjektiv', 'adnominal', 'adverbial',
+           		     	      	    	      	  'preposisjon', 'presens partisipp',
+	                        					  'stadadverbial', 'substantiv', 'tidsadverbial',
+												  'verb', 'vokativ')),
+       notat CHAR,  -- Til tydeleggjering av homonym og ulike argument av eit predikat.
+
+       UNIQUE(ord, notat) ON CONFLICT ABORT
+);
+
+
+CREATE TABLE diplom (
+       id INTEGER PRIMARY KEY,
+
+       bind CHAR NOT NULL,
+       brevnummer INT NOT NULL,
+
+       -- Ikkje ideelt, men godt nok for denne oppgåva.
+       dato INTEGER CHECK (dato > 13080306 AND dato < 15400000),
+       stad CHAR,
+
+       UNIQUE(bind, brevnummer) ON CONFLICT ABORT
+);
+
+
+CREATE TABLE ord (
+       id INTEGER PRIMARY KEY,
+       oppslagsartikkel_id REFERENCES oppslagsartikkel(id) NOT NULL,
+       styrande_ord_id REFERENCES styrande_ord(id) NOT NULL,
+       yverordna_frase_id REFERENCES yverordna_frase(id) NOT NULL,
+
+       -- Kvart ord som har/viser kasus, som det står i diplomet.
+       token CHAR NOT NULL,
+
+       /* Morfosyntaktiske eigenskapar. Bortsett frå «kasus» og «ending» kan
+       eitkvart felt vera tomt. */
+       bunden CHAR CHECK (bunden IN ('ja', 'nei')),
+       -- Eit bindestrekk er brukt til null-ending.
+       ending CHAR NOT NULL,
+       kasus CHAR NOT NULL CHECK (kasus IN ('nominativ', 'akkusativ', 'dativ', 'genitiv', 'uavgjort')),
+       kjønn CHAR CHECK (kjønn IN ('hankjønn', 'hokjønn', 'inkjekjønn')),
+       person CHAR CHECK (person IN ('1.', '2.', '3.')),
+       sterk_linn CHAR CHECK (sterk_linn in ('sterk', 'linn')),
+       tal CHAR CHECK (tal IN ('eintal', 'total', 'fleirtal'))
+);
+
+
+-- Triggers
+
+CREATE TRIGGER adjektiv_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'adjektiv' IN (
+     		    SELECT kategori FROM oppslagsartikkel
+		    WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		   )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.sterk_linn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Adjektiv krev: kasus, kjønn, sterk/linn og tal.');
+END;
+
+
+CREATE TRIGGER adjektiv_sjekk_ingen_person
+BEFORE INSERT ON ord
+
+WHEN 'adjektiv' IN (
+     			    SELECT kategori FROM oppslagsartikkel
+			    WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+			   )
+AND NEW.person IS NOT NULL
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Lagord skal ikkje hava personinformasjon.');
+END;
+
+
+CREATE TRIGGER bunden_artikkel_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'bunden artikkel' IN (
+     		    SELECT kategori FROM oppslagsartikkel
+		    WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		   )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Bundene artikkel krev: kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER grunntal_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'grunntal' IN (
+     		    SELECT kategori FROM oppslagsartikkel
+		    WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		   )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Grunntal krev: kasus og kjønn.');
+END;
+
+
+CREATE TRIGGER ordenstal_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'ordenstal' IN (
+     		    SELECT kategori FROM oppslagsartikkel
+		    WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		   )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.sterk_linn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Ordenstal krev: kasus, kjønn, sterk/linn og tal.');
+END;
+
+
+CREATE TRIGGER perfektum_partisipp_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'perfektum partisipp' IN (
+     			       SELECT kategori FROM oppslagsartikkel
+			       WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+			      )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Perfektum partisipp krev: kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER personnamn_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'personnamn' IN (
+     		      SELECT kategori FROM oppslagsartikkel
+		      WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		     )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Personnamn krev: kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER personleg_pronomen_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'personleg pronomen' IN (
+			      SELECT kategori FROM oppslagsartikkel
+			      WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+			     )
+AND (NEW.kasus IS NULL OR
+     NEW.person IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Personleg pronomen krev: kasus, person og tal.');
+END;
+
+
+CREATE TRIGGER presens_partisipp_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'presens partisipp' IN (
+     	      		     SELECT kategori FROM oppslagsartikkel
+			     WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+			    )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Presens partisipp krev: kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER stadnamn_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'stadnamn' IN (
+     		    SELECT kategori FROM oppslagsartikkel
+		    WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		   )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Stadnamn krev: kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER substantiv_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'substantiv' IN (
+       		      SELECT kategori FROM oppslagsartikkel
+		      WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+		     )
+AND (NEW.bunden IS NULL OR
+     NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Substantiv krev: bunden, kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER ubunde_pronomen_sjekk
+BEFORE INSERT ON ord
+
+WHEN 'ubunde pronomen' IN (
+			      SELECT kategori FROM oppslagsartikkel
+			      WHERE NEW.oppslagsartikkel_id = oppslagsartikkel.id
+			     )
+AND (NEW.kasus IS NULL OR
+     NEW.kjønn IS NULL OR
+     NEW.tal IS NULL)
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Ubunde pronomen krev: kasus, kjønn og tal.');
+END;
+
+
+CREATE TRIGGER ingen_nye_rader_sjekk
+BEFORE INSERT ON styrande_ord
+
+WHEN (NEW.ord IN ('adnominal', 'adverbial', 'stadadverbial',
+                  'tidsadverbial', 'vokativ') OR
+      NEW.kategori IN ('adnominal', 'adverbial', 'stadadverbial',
+                       'tidsadverbial', 'vokativ'))
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Kategorien finst allereie i databasen.');
+END;
+
+
+CREATE TRIGGER ord_kategori_par
+BEFORE INSERT ON styrande_ord
+
+WHEN (NEW.ord IS NULL OR NEW.ord = '')
+
+BEGIN
+SELECT RAISE(ROLLBACK, 'Det krevst eit styrande ord.');
+END;
+
+
+CREATE TRIGGER styrande_ord_null_check
+BEFORE INSERT ON styrande_ord
+
+WHEN NEW.notat IS NULL AND (
+     	       	       	    SELECT id FROM styrande_ord
+			    WHERE ord = NEW.ord AND notat IS NULL)
+
+BEGIN
+SELECT RAISE(IGNORE);
+END;
+
+
+-- Indexes
+
+CREATE INDEX oppslagsartikkel_ord_idx ON oppslagsartikkel(ord);
+CREATE INDEX ord_token_idx ON ord(token);
+CREATE INDEX styrande_ord_idx ON styrande_ord(ord);
+CREATE INDEX diplom_dato_idx ON diplom(dato);
